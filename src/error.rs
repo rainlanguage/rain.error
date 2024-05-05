@@ -305,7 +305,7 @@ mod tests {
             }))
             .await;
 
-        let err = res.err().expect("expected error");
+        let err = res.expect_err("expected error");
 
         match err {
             AbiDecodeFailedErrors::HexDecodeError(_) => {}
