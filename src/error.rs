@@ -143,7 +143,7 @@ impl AbiDecodedErrorType {
             let arg = U256::try_from_be_slice(data).unwrap();
             let reason = match arg {
                 v if v == U256::from(0x00) => "generic compiler inserted panics, (code: 0x00)",
-                v if v == U256::from(0x01) => "assert with an argument that evaluates to false (code: 0x01)",
+                v if v == U256::from(0x01) => "assert with an argument that evaluates to false, (code: 0x01)",
                 v if v == U256::from(0x11) => "an arithmetic operation resulted in underflow or overflow outside of an unchecked { ... } block, (code: 0x11)",
                 v if v == U256::from(0x12) => "divide or modulo by zero (e.g. 5 / 0 or 23 % 0), (code: 0x12)",
                 v if v == U256::from(0x21) => "convert a value that is too big or negative into an enum type, (code: 0x21)",
