@@ -132,8 +132,9 @@ impl AbiDecodedErrorType {
         }
     }
 
-    /// Decodes an error by checking if it is a Panic(uint256) and returns Self with
-    /// decoding error args into the reason specified in specs:
+    /// Decodes an error by checking if it is a Panic(uint256) and returns `None` if
+    /// it is not and returns `Some(Self::Known)` if it is, with decoding error args
+    /// into the reason specified in specs:
     ///
     /// https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require
     pub fn decode_panic(selector: [u8; 4], data: &[u8]) -> Option<Self> {
