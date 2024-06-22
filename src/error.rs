@@ -152,7 +152,7 @@ impl AbiDecodedErrorType {
                 v if v == U256::from(0x32) => "tried to access an array, bytesN or an array slice at an out-of-bounds or negative index (i.e. x[i] where i >= x.length or i < 0), (code: 0x32)",
                 v if v == U256::from(0x41) => "allocated too much memory or created an array that is too large, (code: 0x41)",
                 v if v == U256::from(0x51) => "call to a zero-initialized variable of internal function type, (code: 0x51)",
-                _ => "unknown reason"
+                _ => "unknown"
             };
             Some(Self::Known {
                 name: format!("Panic, reason: {}", reason),
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_decode_panic_error() {
+    async fn test_decode_panic_error_known_reason() {
         let arg_data = U256::from(0x12);
         let res = AbiDecodedErrorType::decode_panic(PANIC_SELECTOR, &arg_data.to_be_bytes_vec())
             .expect("expected to be some");
@@ -366,6 +366,22 @@ mod tests {
                 name:
                     "Panic, reason: divide or modulo by zero (e.g. 5 / 0 or 23 % 0), (code: 0x12)"
                         .to_string(),
+                args: vec![format!("{:?}", arg_data)],
+                sig: PANIC_SIG.to_string(),
+                data: arg_data.to_be_bytes_vec(),
+            },
+            res
+        );
+    }
+
+    #[tokio::test]
+    async fn test_decode_panic_error_unknown_reason() {
+        let arg_data = U256::from(0x88);
+        let res = AbiDecodedErrorType::decode_panic(PANIC_SELECTOR, &arg_data.to_be_bytes_vec())
+            .expect("expected to be some");
+        assert_eq!(
+            AbiDecodedErrorType::Known {
+                name: "Panic, reason: unknown".to_string(),
                 args: vec![format!("{:?}", arg_data)],
                 sig: PANIC_SIG.to_string(),
                 data: arg_data.to_be_bytes_vec(),
