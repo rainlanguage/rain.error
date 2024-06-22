@@ -1,6 +1,7 @@
 use alloy_dyn_abi::JsonAbiExt;
 use alloy_json_abi::Error as AlloyError;
 use alloy_primitives::hex::{decode, hex::encode, FromHexError};
+use alloy_primitives::U256;
 use ethers::providers::RpcError;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Error as ReqwestError};
@@ -12,6 +13,10 @@ use std::{
 use thiserror::Error;
 
 pub const SELECTOR_REGISTRY_URL: &str = "https://api.openchain.xyz/signature-database/v1/lookup";
+
+// panic selector
+pub const PANIC_SELECTOR: [u8; 4] = [0x4e, 0x48, 0x7b, 0x71]; // 0x4e487b71
+pub const PANIC_SIG: &str = "Panic(uint256)";
 
 /// hashmap of cached error selectors
 pub static SELECTORS: Lazy<Mutex<HashMap<[u8; 4], AlloyError>>> =
@@ -69,6 +74,11 @@ impl AbiDecodedErrorType {
         let selector_hash = alloy_primitives::hex::encode_prefixed(hash_bytes);
         let selector_hash_bytes: [u8; 4] = hash_bytes.try_into()?;
 
+        // check if the error is Panic and return early if so
+        if let Some(result) = Self::decode_panic(selector_hash_bytes, args_data) {
+            return Ok(result);
+        }
+
         // check if selector already is cached
         let cached_selector = Self::retrieve_from_cache(selector_hash_bytes).await?;
         if let Some(error) = cached_selector {
@@ -119,6 +129,38 @@ impl AbiDecodedErrorType {
             Ok(Self::Unknown(error_data.to_vec()))
         } else {
             Ok(Self::Unknown(error_data.to_vec()))
+        }
+    }
+
+    /// Decodes an error by checking if it is a Panic(uint256) and returns Self with
+    /// decoding error args into the reason specified in specs:
+    ///
+    /// https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require
+    pub fn decode_panic(selector: [u8; 4], data: &[u8]) -> Option<Self> {
+        if selector == PANIC_SELECTOR && data.len() == 32 {
+            // unwrap because already asserted the length
+            let arg = U256::try_from_be_slice(data).unwrap();
+            let reason = match arg {
+                v if v == U256::from(0x00) => "generic compiler inserted panics, (code: 0x00)",
+                v if v == U256::from(0x01) => "assert with an argument that evaluates to false (code: 0x01)",
+                v if v == U256::from(0x11) => "an arithmetic operation resulted in underflow or overflow outside of an unchecked { ... } block, (code: 0x11)",
+                v if v == U256::from(0x12) => "divide or modulo by zero (e.g. 5 / 0 or 23 % 0), (code: 0x12)",
+                v if v == U256::from(0x21) => "convert a value that is too big or negative into an enum type, (code: 0x21)",
+                v if v == U256::from(0x22) => "tried to access a storage byte array that is incorrectly encoded, (code: 0x22)",
+                v if v == U256::from(0x31) => "called .pop() on an empty array, (code: 0x31)",
+                v if v == U256::from(0x32) => "tried to access an array, bytesN or an array slice at an out-of-bounds or negative index (i.e. x[i] where i >= x.length or i < 0), (code: 0x32)",
+                v if v == U256::from(0x41) => "allocated too much memory or created an array that is too large, (code: 0x41)",
+                v if v == U256::from(0x51) => "call to a zero-initialized variable of internal function type, (code: 0x51)",
+                _ => "unknown reason"
+            };
+            Some(Self::Known {
+                name: format!("Panic, reason: {}", reason),
+                args: vec![format!("{:?}", arg)],
+                sig: PANIC_SIG.to_string(),
+                data: data.to_vec(),
+            })
+        } else {
+            None
         }
     }
 }
@@ -311,5 +353,48 @@ mod tests {
             AbiDecodeFailedErrors::HexDecodeError(_) => {}
             _ => panic!("unexpected error"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_decode_panic_error() {
+        let arg_data = U256::from(0x12);
+        let res = AbiDecodedErrorType::decode_panic(PANIC_SELECTOR, &arg_data.to_be_bytes_vec())
+            .expect("expected to be some");
+        assert_eq!(
+            AbiDecodedErrorType::Known {
+                name:
+                    "Panic, reason: divide or modulo by zero (e.g. 5 / 0 or 23 % 0), (code: 0x12)"
+                        .to_string(),
+                args: vec![format!("{:?}", arg_data)],
+                sig: PANIC_SIG.to_string(),
+                data: arg_data.to_be_bytes_vec(),
+            },
+            res
+        );
+    }
+
+    #[tokio::test]
+    async fn test_error_decoder_provider_with_panic() {
+        let arg_data = U256::from(0x51);
+        let mut data = PANIC_SELECTOR.to_vec();
+        data.extend_from_slice(&arg_data.to_be_bytes_vec());
+
+        let res =
+            AbiDecodedErrorType::try_from_provider_error(MockError::JsonRpcError(JsonRpcError {
+                code: 3,
+                data: Some(json!(encode(&data))),
+                message: "execution reverted".to_string(),
+            }))
+            .await
+            .expect("failed to get error selector");
+        assert_eq!(
+            AbiDecodedErrorType::Known {
+                name: "Panic, reason: call to a zero-initialized variable of internal function type, (code: 0x51)".to_string(),
+                args: vec![format!("{:?}", arg_data)],
+                sig: PANIC_SIG.to_string(),
+                data: arg_data.to_be_bytes_vec(),
+            },
+            res
+        );
     }
 }
