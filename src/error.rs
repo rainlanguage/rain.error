@@ -1,5 +1,6 @@
 use alloy_dyn_abi::JsonAbiExt;
 use alloy_json_abi::Error as AlloyError;
+use alloy_primitives::hex::encode_prefixed;
 use alloy_primitives::hex::{decode, hex::encode, FromHexError};
 use alloy_primitives::U256;
 use ethers::providers::RpcError;
@@ -138,24 +139,27 @@ impl AbiDecodedErrorType {
     ///
     /// https://docs.soliditylang.org/en/latest/control-structures.html#panic-via-assert-and-error-via-require
     pub fn decode_panic(selector: [u8; 4], data: &[u8]) -> Option<Self> {
-        if selector == PANIC_SELECTOR && data.len() == 32 {
-            // unwrap because already asserted the length
-            let arg = U256::try_from_be_slice(data).unwrap();
+        if selector == PANIC_SELECTOR {
+            let arg = U256::try_from_be_slice(data)?;
             let reason = match arg {
-                v if v == U256::from(0x00) => "generic compiler inserted panics, (code: 0x00)",
-                v if v == U256::from(0x01) => "assert with an argument that evaluates to false, (code: 0x01)",
-                v if v == U256::from(0x11) => "an arithmetic operation resulted in underflow or overflow outside of an unchecked { ... } block, (code: 0x11)",
-                v if v == U256::from(0x12) => "divide or modulo by zero (e.g. 5 / 0 or 23 % 0), (code: 0x12)",
-                v if v == U256::from(0x21) => "convert a value that is too big or negative into an enum type, (code: 0x21)",
-                v if v == U256::from(0x22) => "tried to access a storage byte array that is incorrectly encoded, (code: 0x22)",
-                v if v == U256::from(0x31) => "called .pop() on an empty array, (code: 0x31)",
-                v if v == U256::from(0x32) => "tried to access an array, bytesN or an array slice at an out-of-bounds or negative index (i.e. x[i] where i >= x.length or i < 0), (code: 0x32)",
-                v if v == U256::from(0x41) => "allocated too much memory or created an array that is too large, (code: 0x41)",
-                v if v == U256::from(0x51) => "call to a zero-initialized variable of internal function type, (code: 0x51)",
-                _ => "unknown"
+                v if v == U256::from(0x00) => "generic compiler inserted panics",
+                v if v == U256::from(0x01) => "asserted with an argument that evaluates to false",
+                v if v == U256::from(0x11) => "an arithmetic operation resulted in underflow or overflow outside of an unchecked { ... } block",
+                v if v == U256::from(0x12) => "divide or modulo by zero (e.g. 5 / 0 or 23 % 0)",
+                v if v == U256::from(0x21) => "converted a value that is too big or negative into an enum type",
+                v if v == U256::from(0x22) => "accessed a storage byte array that is incorrectly encoded",
+                v if v == U256::from(0x31) => "called .pop() on an empty array",
+                v if v == U256::from(0x32) => "accessed an array, bytesN or an array slice at an out-of-bounds or negative index (i.e. x[i] where i >= x.length or i < 0)",
+                v if v == U256::from(0x41) => "allocated too much memory or created an array that is too large",
+                v if v == U256::from(0x51) => "called a zero-initialized variable of internal function type",
+                _ => "unknown",
             };
             Some(Self::Known {
-                name: format!("Panic, reason: {}", reason),
+                name: format!(
+                    "Panic, reason: {}, (code: {})",
+                    reason,
+                    encode_prefixed(arg.to_be_bytes_trimmed_vec()),
+                ),
                 args: vec![format!("{:?}", arg)],
                 sig: PANIC_SIG.to_string(),
                 data: data.to_vec(),
@@ -376,12 +380,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_decode_panic_error_unknown_reason() {
-        let arg_data = U256::from(0x88);
+        let arg_data = U256::from(0x777);
         let res = AbiDecodedErrorType::decode_panic(PANIC_SELECTOR, &arg_data.to_be_bytes_vec())
             .expect("expected to be some");
         assert_eq!(
             AbiDecodedErrorType::Known {
-                name: "Panic, reason: unknown".to_string(),
+                name: "Panic, reason: unknown, (code: 0x0777)".to_string(),
                 args: vec![format!("{:?}", arg_data)],
                 sig: PANIC_SIG.to_string(),
                 data: arg_data.to_be_bytes_vec(),
@@ -406,7 +410,7 @@ mod tests {
             .expect("failed to get error selector");
         assert_eq!(
             AbiDecodedErrorType::Known {
-                name: "Panic, reason: call to a zero-initialized variable of internal function type, (code: 0x51)".to_string(),
+                name: "Panic, reason: called a zero-initialized variable of internal function type, (code: 0x51)".to_string(),
                 args: vec![format!("{:?}", arg_data)],
                 sig: PANIC_SIG.to_string(),
                 data: arg_data.to_be_bytes_vec(),
