@@ -62,12 +62,19 @@ impl AbiDecodedErrorType {
     pub async fn selector_registry_abi_decode(
         error_data: &[u8],
     ) -> Result<Self, AbiDecodeFailedErrors> {
+        if error_data.is_empty() {
+            return Err(AbiDecodeFailedErrors::NoData);
+        }
         if error_data.len() < 4 {
-            return Err(AbiDecodeFailedErrors::InvalidSelectorHash);
+            return Err(AbiDecodeFailedErrors::InvalidSelectorHash(
+                error_data.to_vec(),
+            ));
         }
         let (hash_bytes, args_data) = error_data.split_at(4);
         let selector_hash = alloy_primitives::hex::encode_prefixed(hash_bytes);
-        let selector_hash_bytes: [u8; 4] = hash_bytes.try_into()?;
+        let selector_hash_bytes: [u8; 4] = hash_bytes
+            .try_into()
+            .map_err(|_| AbiDecodeFailedErrors::InvalidSelectorHash(hash_bytes.to_vec()))?;
 
         // check if selector already is cached
         let cached_selector = Self::retrieve_from_cache(selector_hash_bytes).await?;
@@ -148,17 +155,14 @@ impl AbiDecodedErrorType {
 pub enum AbiDecodeFailedErrors {
     #[error("Reqwest error: {0}")]
     ReqwestError(#[from] ReqwestError),
-    #[error("Invalid SelectorHash")]
-    InvalidSelectorHash,
+    #[error("Invalid Error Selector: {0:?}")]
+    InvalidSelectorHash(Vec<u8>),
     #[error("Selectors Cache Poisoned")]
     SelectorsCachePoisoned,
     #[error(transparent)]
     HexDecodeError(#[from] FromHexError),
-}
-impl From<std::array::TryFromSliceError> for AbiDecodeFailedErrors {
-    fn from(_value: std::array::TryFromSliceError) -> Self {
-        Self::InvalidSelectorHash
-    }
+    #[error("No Error Data")]
+    NoData,
 }
 
 impl<'a> From<PoisonError<MutexGuard<'a, HashMap<[u8; 4], AlloyError>>>> for AbiDecodeFailedErrors {
@@ -208,7 +212,19 @@ mod tests {
             .await
             .expect_err("expected error");
         match res {
-            AbiDecodeFailedErrors::InvalidSelectorHash => {}
+            AbiDecodeFailedErrors::InvalidSelectorHash(_) => {}
+            _ => panic!("unexpected error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_decoder_no_data() {
+        let data = vec![];
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+            .await
+            .expect_err("expected error");
+        match res {
+            AbiDecodeFailedErrors::NoData => {}
             _ => panic!("unexpected error"),
         }
     }
