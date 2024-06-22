@@ -1,7 +1,6 @@
 use alloy_dyn_abi::JsonAbiExt;
 use alloy_json_abi::Error as AlloyError;
-use alloy_primitives::hex::encode_prefixed;
-use alloy_primitives::hex::{decode, hex::encode, FromHexError};
+use alloy_primitives::hex::{decode, encode, encode_prefixed, FromHexError};
 use alloy_primitives::U256;
 use ethers::providers::RpcError;
 use once_cell::sync::Lazy;
@@ -16,8 +15,8 @@ use thiserror::Error;
 pub const SELECTOR_REGISTRY_URL: &str = "https://api.openchain.xyz/signature-database/v1/lookup";
 
 // panic selector
-pub const PANIC_SELECTOR: [u8; 4] = [0x4e, 0x48, 0x7b, 0x71]; // 0x4e487b71
 pub const PANIC_SIG: &str = "Panic(uint256)";
+pub const PANIC_SELECTOR: [u8; 4] = [0x4e, 0x48, 0x7b, 0x71]; // 0x4e487b71
 
 /// hashmap of cached error selectors
 pub static SELECTORS: Lazy<Mutex<HashMap<[u8; 4], AlloyError>>> =
@@ -216,11 +215,9 @@ impl<'a> From<PoisonError<MutexGuard<'a, HashMap<[u8; 4], AlloyError>>>> for Abi
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::hex::encode;
+    use super::*;
     use ethers::providers::{JsonRpcError, MockError};
     use serde_json::json;
-
-    use super::*;
 
     #[tokio::test]
     async fn test_error_decoder() {
