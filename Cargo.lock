@@ -2655,6 +2655,7 @@ dependencies = [
  "alloy-sol-types",
  "anyhow",
  "ethers",
+ "getrandom",
  "once_cell",
  "reqwest",
  "serde",

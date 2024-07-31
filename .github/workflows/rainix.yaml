@@ -32,3 +32,6 @@ jobs:
           ETH_RPC_URL: ${{ vars.CI_DEPLOY_SEPOLIA_RPC_URL }}
           ETHERSCAN_API_KEY: ${{ secrets.EXPLORER_VERIFICATION_KEY }}
         run: nix develop --command ${{ matrix.task }}
+
+      - name: Build for wasm target
+        run: nix develop -c cargo build --target wasm32-unknown-unknown
