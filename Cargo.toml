@@ -23,8 +23,13 @@ serde = "1.0.195"
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom = { version = "0.2.11", features = ["js", "js-sys"] }
 
-[dev-dependencies]
+[target.'cfg(target_family = "wasm")'.dev-dependencies]
+tokio = { version = "1.28.0", features = ["sync", "macros", "io-util", "rt", "time"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tokio = { version = "1.28.0", features = ["full"] }
+
+[dev-dependencies]
 anyhow = "1.0.70"
 
 [lints.clippy]
