@@ -2,6 +2,9 @@
 name = "rain-error-decoding"
 version = "0.1.0"
 edition = "2021"
+description = "Crate for rain error decoding"
+license = "CAL-1.0"
+homepage = "https://github.com/rainlanguage/rain.error"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
