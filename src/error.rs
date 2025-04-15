@@ -24,7 +24,10 @@ pub static SELECTORS: Lazy<Mutex<HashMap<[u8; 4], AlloyError>>> =
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Error)]
 pub enum AbiDecodedErrorType {
-    Unknown(Vec<u8>),
+    Unknown {
+        message: Option<String>,
+        data: Option<Vec<u8>>,
+    },
     Known {
         name: String,
         args: Vec<String>,
@@ -42,10 +45,23 @@ impl From<AbiDecodedErrorType> for String {
 impl std::fmt::Display for AbiDecodedErrorType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AbiDecodedErrorType::Unknown(data) => f.write_str(&format!(
-                "Execution reverted with unknown error. Data: {:?} ",
-                encode(data)
-            )),
+            AbiDecodedErrorType::Unknown { message, data } => match (message, data) {
+                (Some(message), Some(data)) => f.write_str(&format!(
+                    "Execution reverted with message: '{}' and data: {:?}",
+                    message,
+                    encode(data)
+                )),
+                (Some(message), None) => {
+                    f.write_str(&format!("Execution reverted with message: '{}'", message))
+                }
+                (None, Some(data)) => f.write_str(&format!(
+                    "Execution reverted without a message, but with data: {:?}",
+                    encode(data)
+                )),
+                (None, None) => f.write_str(
+                    "Execution reverted without a message, and without data. Check logs for more information or try another RPC provider.",
+                ),
+            },
             AbiDecodedErrorType::Known { name, args, .. } => f.write_str(&format!(
                 "Execution reverted with error: {}\n{}",
                 name,
@@ -65,6 +81,7 @@ impl AbiDecodedErrorType {
 
     /// decodes an error returned from calling a contract by searching its selector in registry
     pub async fn selector_registry_abi_decode(
+        message: Option<String>,
         error_data: &[u8],
     ) -> Result<Self, AbiDecodeFailedErrors> {
         if error_data.is_empty() {
@@ -97,7 +114,10 @@ impl AbiDecodedErrorType {
                     data: error_data.to_vec(),
                 });
             }
-            return Ok(Self::Unknown(error_data.to_vec()));
+            return Ok(AbiDecodedErrorType::Unknown {
+                message: message.clone(),
+                data: Some(error_data.to_vec()),
+            });
         }
 
         let client = Client::builder().build()?;
@@ -133,9 +153,15 @@ impl AbiDecodedErrorType {
                     }
                 }
             }
-            Ok(Self::Unknown(error_data.to_vec()))
+            Ok(AbiDecodedErrorType::Unknown {
+                message: message.clone(),
+                data: Some(error_data.to_vec()),
+            })
         } else {
-            Ok(Self::Unknown(error_data.to_vec()))
+            Ok(AbiDecodedErrorType::Unknown {
+                message: message.clone(),
+                data: Some(error_data.to_vec()),
+            })
         }
     }
 
@@ -184,15 +210,24 @@ impl AbiDecodedErrorType {
         if let Some(err) = err {
             if let Some(data) = &err.data {
                 if let Some(data) = data.as_str() {
-                    Ok(Self::selector_registry_abi_decode(&decode(data)?).await?)
+                    Ok(Self::selector_registry_abi_decode(Some(err.message.clone()), &decode(data)?).await?)
                 } else {
-                    Ok(Self::Unknown(vec![]))
+                    Ok(Self::Unknown {
+                        message: Some(err.message.to_string()),
+                        data: None,
+                    })
                 }
             } else {
-                Ok(Self::Unknown(vec![]))
+                Ok(Self::Unknown {
+                    message: Some(err.message.to_string()),
+                    data: None,
+                })
             }
         } else {
-            Ok(Self::Unknown(vec![]))
+            Ok(Self::Unknown {
+                message:None,
+                data: None,
+            })
         }
     }
 }
@@ -226,7 +261,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder() {
         let data = vec![26, 198, 105, 8];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(None, &data.clone())
             .await
             .expect("failed to get error selector");
         assert_eq!(
@@ -243,16 +278,20 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_unknown() {
         let data = vec![26, 198, 105, 9];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(None, &data.clone())
             .await
             .expect("failed to get error selector");
-        assert_eq!(AbiDecodedErrorType::Unknown(data), res);
+        assert_eq!(AbiDecodedErrorType::Unknown {
+            message: None,
+            data: Some(data.clone()),
+        }, res);
+        assert_eq!(res.to_string(), "Execution reverted without a message, but with data: \"1ac66909\"");
     }
 
     #[tokio::test]
     async fn test_error_decoder_invalid_selector() {
         let data = vec![26, 198, 105];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(None, &data.clone())
             .await
             .expect_err("expected error");
         match res {
@@ -264,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_no_data() {
         let data = vec![];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(None, &data.clone())
             .await
             .expect_err("expected error");
         match res {
@@ -276,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_cache() {
         let data = vec![26, 198, 105, 8];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(None, &data.clone())
             .await
             .expect("failed to get error selector");
         assert_eq!(
@@ -339,7 +378,11 @@ mod tests {
             }))
             .await
             .expect("failed to get error selector");
-        assert_eq!(AbiDecodedErrorType::Unknown(vec![]), res);
+        assert_eq!(AbiDecodedErrorType::Unknown {
+            message: Some("execution reverted".to_string()),
+            data: None,
+        }, res);
+        assert_eq!(res.to_string(), "Execution reverted with message: 'execution reverted'");
     }
 
     #[tokio::test]
@@ -352,7 +395,11 @@ mod tests {
             }))
             .await
             .expect("failed to get error selector");
-        assert_eq!(AbiDecodedErrorType::Unknown(vec![]), res);
+        assert_eq!(AbiDecodedErrorType::Unknown {
+            message: Some("execution reverted".to_string()),
+            data: None,
+        }, res);
+        assert_eq!(res.to_string(), "Execution reverted with message: 'execution reverted'");
     }
 
     #[tokio::test]
@@ -430,5 +477,57 @@ mod tests {
             },
             res
         );
+    }
+
+    #[tokio::test]
+    async fn test_display_implementation() {
+        let error1 = AbiDecodedErrorType::Unknown {
+            message: Some("Test message".to_string()),
+            data: Some(vec![0xde, 0xad, 0xbe, 0xef]),
+        };
+        assert_eq!(
+            error1.to_string(),
+            "Execution reverted with message: 'Test message' and data: \"deadbeef\""
+        );
+
+        let error2 = AbiDecodedErrorType::Unknown {
+            message: Some("Another test message".to_string()),
+            data: None,
+        };
+        assert_eq!(
+            error2.to_string(),
+            "Execution reverted with message: 'Another test message'"
+        );
+
+        let error3 = AbiDecodedErrorType::Unknown {
+            message: None,
+            data: Some(vec![0x1a, 0xc6, 0x69, 0x09]),
+        };
+        assert_eq!(
+            error3.to_string(),
+            "Execution reverted without a message, but with data: \"1ac66909\""
+        );
+
+
+        let error4 = AbiDecodedErrorType::Unknown {
+            message: None,
+            data: None,
+        };
+        assert_eq!(
+            error4.to_string(),
+            "Execution reverted without a message, and without data. Check logs for more information or try another RPC provider."
+        );
+
+        let error5 = AbiDecodedErrorType::Known {
+                name: "MyCustomError".to_owned(),
+                args: vec!["arg1".to_string(), "arg2".to_string()],
+                sig: "MyCustomError(string,string)".to_owned(),
+                data: vec![0xaa, 0xbb, 0xcc, 0xdd]
+            };
+        assert_eq!(
+            error5.to_string(),
+            "Execution reverted with error: MyCustomError\narg1\narg2"
+        );
+
     }
 }
