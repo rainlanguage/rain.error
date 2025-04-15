@@ -210,7 +210,11 @@ impl AbiDecodedErrorType {
         if let Some(err) = err {
             if let Some(data) = &err.data {
                 if let Some(data) = data.as_str() {
-                    Ok(Self::selector_registry_abi_decode(Some(err.message.clone()), &decode(data)?).await?)
+                    Ok(Self::selector_registry_abi_decode(
+                        Some(err.message.clone()),
+                        &decode(data)?,
+                    )
+                    .await?)
                 } else {
                     Ok(Self::Unknown {
                         message: Some(err.message.to_string()),
@@ -225,7 +229,7 @@ impl AbiDecodedErrorType {
             }
         } else {
             Ok(Self::Unknown {
-                message:None,
+                message: None,
                 data: None,
             })
         }
@@ -281,11 +285,17 @@ mod tests {
         let res = AbiDecodedErrorType::selector_registry_abi_decode(None, &data.clone())
             .await
             .expect("failed to get error selector");
-        assert_eq!(AbiDecodedErrorType::Unknown {
-            message: None,
-            data: Some(data.clone()),
-        }, res);
-        assert_eq!(res.to_string(), "Execution reverted without a message, but with data: \"1ac66909\"");
+        assert_eq!(
+            AbiDecodedErrorType::Unknown {
+                message: None,
+                data: Some(data.clone()),
+            },
+            res
+        );
+        assert_eq!(
+            res.to_string(),
+            "Execution reverted without a message, but with data: \"1ac66909\""
+        );
     }
 
     #[tokio::test]
@@ -378,11 +388,17 @@ mod tests {
             }))
             .await
             .expect("failed to get error selector");
-        assert_eq!(AbiDecodedErrorType::Unknown {
-            message: Some("execution reverted".to_string()),
-            data: None,
-        }, res);
-        assert_eq!(res.to_string(), "Execution reverted with message: 'execution reverted'");
+        assert_eq!(
+            AbiDecodedErrorType::Unknown {
+                message: Some("execution reverted".to_string()),
+                data: None,
+            },
+            res
+        );
+        assert_eq!(
+            res.to_string(),
+            "Execution reverted with message: 'execution reverted'"
+        );
     }
 
     #[tokio::test]
@@ -395,11 +411,17 @@ mod tests {
             }))
             .await
             .expect("failed to get error selector");
-        assert_eq!(AbiDecodedErrorType::Unknown {
-            message: Some("execution reverted".to_string()),
-            data: None,
-        }, res);
-        assert_eq!(res.to_string(), "Execution reverted with message: 'execution reverted'");
+        assert_eq!(
+            AbiDecodedErrorType::Unknown {
+                message: Some("execution reverted".to_string()),
+                data: None,
+            },
+            res
+        );
+        assert_eq!(
+            res.to_string(),
+            "Execution reverted with message: 'execution reverted'"
+        );
     }
 
     #[tokio::test]
@@ -508,7 +530,6 @@ mod tests {
             "Execution reverted without a message, but with data: \"1ac66909\""
         );
 
-
         let error4 = AbiDecodedErrorType::Unknown {
             message: None,
             data: None,
@@ -519,15 +540,14 @@ mod tests {
         );
 
         let error5 = AbiDecodedErrorType::Known {
-                name: "MyCustomError".to_owned(),
-                args: vec!["arg1".to_string(), "arg2".to_string()],
-                sig: "MyCustomError(string,string)".to_owned(),
-                data: vec![0xaa, 0xbb, 0xcc, 0xdd]
-            };
+            name: "MyCustomError".to_owned(),
+            args: vec!["arg1".to_string(), "arg2".to_string()],
+            sig: "MyCustomError(string,string)".to_owned(),
+            data: vec![0xaa, 0xbb, 0xcc, 0xdd],
+        };
         assert_eq!(
             error5.to_string(),
             "Execution reverted with error: MyCustomError\narg1\narg2"
         );
-
     }
 }
