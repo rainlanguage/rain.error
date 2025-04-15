@@ -52,14 +52,14 @@ impl std::fmt::Display for AbiDecodedErrorType {
                     encode(data)
                 )),
                 (Some(message), None) => {
-                    f.write_str(&format!("Execution reverted with message: '{}'", message))
+                    f.write_str(&format!("RPC call failed with message: '{}'", message))
                 }
                 (None, Some(data)) => f.write_str(&format!(
                     "Execution reverted without a message, but with data: {:?}",
                     encode(data)
                 )),
                 (None, None) => f.write_str(
-                    "Execution reverted without a message, and without data. Check logs for more information or try another RPC provider.",
+                    "RPC call failed without a message, and without data. Check logs for more information or try another RPC provider.",
                 ),
             },
             AbiDecodedErrorType::Known { name, args, .. } => f.write_str(&format!(
@@ -203,36 +203,56 @@ impl AbiDecodedErrorType {
 }
 
 impl AbiDecodedErrorType {
+    pub async fn is_provider_error_has_data(err: impl RpcError) -> bool {
+        let err = err.as_error_response();
+        if let Some(err) = err {
+            return err.data.is_some();
+        }
+        false
+    }
+
+    pub async fn is_provider_error_is_revert(err: impl RpcError) -> bool {
+        let err = err.as_error_response();
+        if let Some(err) = err {
+            return err.is_revert();
+        }
+        false
+    }
+
     pub async fn try_from_provider_error(
         err: impl RpcError,
     ) -> Result<Self, AbiDecodeFailedErrors> {
         let err = err.as_error_response();
         if let Some(err) = err {
-            if let Some(data) = &err.data {
-                if let Some(data) = data.as_str() {
-                    Ok(Self::selector_registry_abi_decode(
-                        Some(err.message.clone()),
-                        &decode(data)?,
-                    )
-                    .await?)
-                } else {
-                    Ok(Self::Unknown {
-                        message: Some(err.message.to_string()),
-                        data: None,
-                    })
-                }
-            } else {
-                Ok(Self::Unknown {
+            if err.data.is_none() {
+                return Ok(Self::Unknown {
                     message: Some(err.message.to_string()),
                     data: None,
                 })
             }
-        } else {
-            Ok(Self::Unknown {
-                message: None,
+
+            if err.is_revert() {
+                if let Some(data) = &err.data {
+                    if let Some(data) = data.as_str() {
+                        return Ok(Self::selector_registry_abi_decode(
+                            Some(err.message.clone()),
+                            &decode(data)?,
+                        )
+                        .await?);
+                    }
+                }
+            }
+
+            return Ok(Self::Unknown {
+                message: Some(err.message.to_string()),
                 data: None,
             })
         }
+
+        Ok(Self::Unknown {
+            message: None,
+            data: None,
+        })
     }
 }
 
@@ -397,7 +417,7 @@ mod tests {
         );
         assert_eq!(
             res.to_string(),
-            "Execution reverted with message: 'execution reverted'"
+            "RPC call failed with message: 'execution reverted'"
         );
     }
 
@@ -420,7 +440,7 @@ mod tests {
         );
         assert_eq!(
             res.to_string(),
-            "Execution reverted with message: 'execution reverted'"
+            "RPC call failed with message: 'execution reverted'"
         );
     }
 
@@ -518,7 +538,7 @@ mod tests {
         };
         assert_eq!(
             error2.to_string(),
-            "Execution reverted with message: 'Another test message'"
+            "RPC call failed with message: 'Another test message'"
         );
 
         let error3 = AbiDecodedErrorType::Unknown {
@@ -536,7 +556,7 @@ mod tests {
         };
         assert_eq!(
             error4.to_string(),
-            "Execution reverted without a message, and without data. Check logs for more information or try another RPC provider."
+            "RPC call failed without a message, and without data. Check logs for more information or try another RPC provider."
         );
 
         let error5 = AbiDecodedErrorType::Known {
