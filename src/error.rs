@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_error_decoder_provider_error() {
+    async fn test_error_decoder_json_rpc_error() {
         let data = vec![26, 198, 105, 8];
         let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_error_decoder_provider_error_no_data() {
+    async fn test_error_decoder_json_rpc_error_no_data() {
         let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: None,
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_error_decoder_provider_error_no_data_str() {
+    async fn test_error_decoder_json_rpc_error_no_data_str() {
         let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: Some(json!(42)),
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_error_decoder_provider_error_no_revert() {
+    async fn test_error_decoder_json_rpc_error_no_revert() {
         let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: None,
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_error_decoder_provider_error_no_data_str_invalid() {
+    async fn test_error_decoder_json_rpc_error_no_data_str_invalid() {
         let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: Some(json!("invalid")),
