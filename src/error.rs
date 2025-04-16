@@ -2,7 +2,7 @@ use alloy_dyn_abi::JsonAbiExt;
 use alloy_json_abi::Error as AlloyError;
 use alloy_primitives::hex::{decode, encode, encode_prefixed, FromHexError};
 use alloy_primitives::U256;
-use ethers::providers::RpcError;
+use ethers::providers::JsonRpcError;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Error as ReqwestError};
 use serde_json::Value;
@@ -177,23 +177,18 @@ impl AbiDecodedErrorType {
 }
 
 impl AbiDecodedErrorType {
-    pub async fn try_from_provider_error(
-        err: impl RpcError,
-    ) -> Result<Self, AbiDecodeFailedErrors> {
-        let err = err.as_error_response();
-        if let Some(err) = err {
-            if let Some(data) = &err.data {
-                if let Some(data) = data.as_str() {
-                    Ok(Self::selector_registry_abi_decode(&decode(data)?).await?)
-                } else {
-                    Ok(Self::Unknown(vec![]))
+    pub async fn try_from_provider_error(err: JsonRpcError) -> Result<Self, AbiDecodeFailedErrors> {
+        if err.is_revert() {
+            if let Some(data_val) = &err.data {
+                if let Some(data_str) = data_val.as_str() {
+                    let decoded_data = decode(data_str)?;
+                    return Self::selector_registry_abi_decode(&decoded_data).await;
                 }
-            } else {
-                Ok(Self::Unknown(vec![]))
             }
-        } else {
-            Ok(Self::Unknown(vec![]))
         }
+        Err(AbiDecodeFailedErrors::InvalidJsonRpcResponse(
+            err.to_string(),
+        ))
     }
 }
 
@@ -209,6 +204,8 @@ pub enum AbiDecodeFailedErrors {
     HexDecodeError(#[from] FromHexError),
     #[error("No Error Data")]
     NoData,
+    #[error("Invalid JSON RPC response for error decoding: '{0}'")]
+    InvalidJsonRpcResponse(String),
 }
 
 impl<'a> From<PoisonError<MutexGuard<'a, HashMap<[u8; 4], AlloyError>>>> for AbiDecodeFailedErrors {
@@ -220,7 +217,7 @@ impl<'a> From<PoisonError<MutexGuard<'a, HashMap<[u8; 4], AlloyError>>>> for Abi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethers::providers::{JsonRpcError, MockError};
+    use ethers::providers::JsonRpcError;
     use serde_json::json;
 
     #[tokio::test]
@@ -310,14 +307,13 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_provider_error() {
         let data = vec![26, 198, 105, 8];
-        let res =
-            AbiDecodedErrorType::try_from_provider_error(MockError::JsonRpcError(JsonRpcError {
-                code: 3,
-                data: Some(json!(encode(&data))),
-                message: "execution reverted".to_string(),
-            }))
-            .await
-            .expect("failed to get error selector");
+        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+            code: 3,
+            data: Some(json!(encode(&data))),
+            message: "execution reverted".to_string(),
+        })
+        .await
+        .expect("failed to get error selector");
         assert_eq!(
             AbiDecodedErrorType::Known {
                 name: "UnexpectedOperandValue".to_owned(),
@@ -331,39 +327,63 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_provider_error_no_data() {
-        let res =
-            AbiDecodedErrorType::try_from_provider_error(MockError::JsonRpcError(JsonRpcError {
-                code: 3,
-                data: None,
-                message: "execution reverted".to_string(),
-            }))
-            .await
-            .expect("failed to get error selector");
-        assert_eq!(AbiDecodedErrorType::Unknown(vec![]), res);
+        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+            code: 3,
+            data: None,
+            message: "execution reverted".to_string(),
+        })
+        .await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AbiDecodeFailedErrors::InvalidJsonRpcResponse(msg) => {
+                assert_eq!(msg, "(code: 3, message: execution reverted, data: None)");
+            }
+            _ => panic!("unexpected error"),
+        }
     }
 
     #[tokio::test]
     async fn test_error_decoder_provider_error_no_data_str() {
-        let res =
-            AbiDecodedErrorType::try_from_provider_error(MockError::JsonRpcError(JsonRpcError {
-                code: 3,
-                data: Some(json!(42)),
-                message: "execution reverted".to_string(),
-            }))
-            .await
-            .expect("failed to get error selector");
-        assert_eq!(AbiDecodedErrorType::Unknown(vec![]), res);
+        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+            code: 3,
+            data: Some(json!(42)),
+            message: "execution reverted".to_string(),
+        })
+        .await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AbiDecodeFailedErrors::InvalidJsonRpcResponse(msg) => {
+                assert_eq!(msg, "(code: 3, message: execution reverted, data: Some(Number(42)))");
+            }
+            _ => panic!("unexpected error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_decoder_provider_error_no_revert() {
+        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+            code: 3,
+            data: None,
+            message: "some message".to_string(),
+        })
+        .await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AbiDecodeFailedErrors::InvalidJsonRpcResponse(msg) => {
+                assert_eq!(msg, "(code: 3, message: some message, data: None)");
+            }
+            _ => panic!("unexpected error"),
+        }
     }
 
     #[tokio::test]
     async fn test_error_decoder_provider_error_no_data_str_invalid() {
-        let res =
-            AbiDecodedErrorType::try_from_provider_error(MockError::JsonRpcError(JsonRpcError {
-                code: 3,
-                data: Some(json!("invalid")),
-                message: "execution reverted".to_string(),
-            }))
-            .await;
+        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+            code: 3,
+            data: Some(json!("invalid")),
+            message: "execution reverted".to_string(),
+        })
+        .await;
 
         let err = res.expect_err("expected error");
 
@@ -413,14 +433,13 @@ mod tests {
         let mut data = PANIC_SELECTOR.to_vec();
         data.extend_from_slice(&arg_data.to_be_bytes_vec());
 
-        let res =
-            AbiDecodedErrorType::try_from_provider_error(MockError::JsonRpcError(JsonRpcError {
-                code: 3,
-                data: Some(json!(encode(&data))),
-                message: "execution reverted".to_string(),
-            }))
-            .await
-            .expect("failed to get error selector");
+        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+            code: 3,
+            data: Some(json!(encode(&data))),
+            message: "execution reverted".to_string(),
+        })
+        .await
+        .expect("failed to get error selector");
         assert_eq!(
             AbiDecodedErrorType::Known {
                 name: "Panic, reason: called a zero-initialized variable of internal function type, (code: 0x51)".to_string(),
