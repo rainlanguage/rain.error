@@ -177,7 +177,7 @@ impl AbiDecodedErrorType {
 }
 
 impl AbiDecodedErrorType {
-    pub async fn try_from_provider_error(err: JsonRpcError) -> Result<Self, AbiDecodeFailedErrors> {
+    pub async fn try_from_json_rpc_error(err: JsonRpcError) -> Result<Self, AbiDecodeFailedErrors> {
         if err.is_revert() {
             if let Some(data_val) = &err.data {
                 if let Some(data_str) = data_val.as_str() {
@@ -307,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_provider_error() {
         let data = vec![26, 198, 105, 8];
-        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: Some(json!(encode(&data))),
             message: "execution reverted".to_string(),
@@ -327,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_provider_error_no_data() {
-        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: None,
             message: "execution reverted".to_string(),
@@ -344,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_provider_error_no_data_str() {
-        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: Some(json!(42)),
             message: "execution reverted".to_string(),
@@ -364,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_provider_error_no_revert() {
-        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: None,
             message: "some message".to_string(),
@@ -381,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_provider_error_no_data_str_invalid() {
-        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: Some(json!("invalid")),
             message: "execution reverted".to_string(),
@@ -436,7 +436,7 @@ mod tests {
         let mut data = PANIC_SELECTOR.to_vec();
         data.extend_from_slice(&arg_data.to_be_bytes_vec());
 
-        let res = AbiDecodedErrorType::try_from_provider_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
             code: 3,
             data: Some(json!(encode(&data))),
             message: "execution reverted".to_string(),
