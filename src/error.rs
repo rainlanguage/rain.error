@@ -353,7 +353,10 @@ mod tests {
         assert!(res.is_err());
         match res.err().unwrap() {
             AbiDecodeFailedErrors::InvalidJsonRpcResponse(msg) => {
-                assert_eq!(msg, "(code: 3, message: execution reverted, data: Some(Number(42)))");
+                assert_eq!(
+                    msg,
+                    "(code: 3, message: execution reverted, data: Some(Number(42)))"
+                );
             }
             _ => panic!("unexpected error"),
         }
