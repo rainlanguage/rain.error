@@ -158,17 +158,16 @@
         "solc": "solc"
       },
       "locked": {
-        "lastModified": 1747832348,
-        "narHash": "sha256-5t7vMuMk5zZBwaxQudSh0ohKx8SFftlrTKXVojNCqSk=",
+        "lastModified": 1748346550,
+        "narHash": "sha256-Rlaj/hHHACo0blFKane6/arqIXWUCGe/sCNgqX8VfZ8=",
         "owner": "rainprotocol",
         "repo": "rainix",
-        "rev": "4e87c16f3abcb4e9e309609f452669f5a85bb558",
+        "rev": "a1a5c321f356cb5006d16dd2d1a2242c183b7e96",
         "type": "github"
       },
       "original": {
         "owner": "rainprotocol",
         "repo": "rainix",
-        "rev": "4e87c16f3abcb4e9e309609f452669f5a85bb558",
         "type": "github"
       }
     },
