@@ -1,8 +1,8 @@
-use alloy_dyn_abi::JsonAbiExt;
-use alloy_json_abi::Error as AlloyError;
-use alloy_primitives::hex::{decode, encode, encode_prefixed, FromHexError};
-use alloy_primitives::U256;
-use ethers::providers::JsonRpcError;
+use alloy::dyn_abi::JsonAbiExt;
+use alloy::json_abi::Error as AlloyError;
+use alloy::primitives::hex::{decode, encode, encode_prefixed, FromHexError};
+use alloy::primitives::U256;
+use alloy::rpc::json_rpc::ErrorPayload;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Error as ReqwestError};
 use serde_json::Value;
@@ -76,7 +76,7 @@ impl AbiDecodedErrorType {
             ));
         }
         let (hash_bytes, args_data) = error_data.split_at(4);
-        let selector_hash = alloy_primitives::hex::encode_prefixed(hash_bytes);
+        let selector_hash = alloy::primitives::hex::encode_prefixed(hash_bytes);
         let selector_hash_bytes: [u8; 4] = hash_bytes
             .try_into()
             .map_err(|_| AbiDecodeFailedErrors::InvalidSelectorHash(hash_bytes.to_vec()))?;
@@ -89,7 +89,7 @@ impl AbiDecodedErrorType {
         // check if selector already is cached
         let cached_selector = Self::retrieve_from_cache(selector_hash_bytes).await?;
         if let Some(error) = cached_selector {
-            if let Ok(result) = error.abi_decode_input(args_data, false) {
+            if let Ok(result) = error.abi_decode_input(args_data) {
                 return Ok(AbiDecodedErrorType::Known {
                     name: error.name.to_string(),
                     args: result.iter().map(|v| format!("{:?}", v)).collect(),
@@ -117,7 +117,7 @@ impl AbiDecodedErrorType {
             for opt_selector in selectors {
                 if let Some(selector) = opt_selector["name"].as_str() {
                     if let Ok(error) = selector.parse::<AlloyError>() {
-                        if let Ok(result) = error.abi_decode_input(args_data, false) {
+                        if let Ok(result) = error.abi_decode_input(args_data) {
                             // cache the fetched selector
                             {
                                 let mut cached_selectors = SELECTORS.lock()?;
@@ -177,13 +177,14 @@ impl AbiDecodedErrorType {
 }
 
 impl AbiDecodedErrorType {
-    pub async fn try_from_json_rpc_error(err: JsonRpcError) -> Result<Self, AbiDecodeFailedErrors> {
-        if err.is_revert() {
-            if let Some(data_val) = &err.data {
-                if let Some(data_str) = data_val.as_str() {
-                    let decoded_data = decode(data_str)?;
-                    return Self::selector_registry_abi_decode(&decoded_data).await;
-                }
+    pub async fn try_from_json_rpc_error(err: ErrorPayload) -> Result<Self, AbiDecodeFailedErrors> {
+        if err.message.contains("revert") {
+            if let Some(val) = &err.data {
+                let unwrapped: String = serde_json::from_str(val.get()).map_err(|_| {
+                    AbiDecodeFailedErrors::InvalidJsonRpcResponse(val.get().to_string())
+                })?;
+                let decoded_data = decode(unwrapped.as_bytes())?;
+                return Self::selector_registry_abi_decode(&decoded_data).await;
             }
         }
         Err(AbiDecodeFailedErrors::InvalidJsonRpcResponse(
@@ -217,8 +218,7 @@ impl<'a> From<PoisonError<MutexGuard<'a, HashMap<[u8; 4], AlloyError>>>> for Abi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ethers::providers::JsonRpcError;
-    use serde_json::json;
+    use serde_json::value::RawValue;
 
     #[tokio::test]
     async fn test_error_decoder() {
@@ -307,10 +307,11 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_json_rpc_error() {
         let data = vec![26, 198, 105, 8];
-        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
+        let encoded = encode(&data);
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(ErrorPayload {
             code: 3,
-            data: Some(json!(encode(&data))),
-            message: "execution reverted".to_string(),
+            data: Some(RawValue::from_string(format!(r#""{encoded}""#)).unwrap()),
+            message: "execution reverted".into(),
         })
         .await
         .expect("failed to get error selector");
@@ -327,16 +328,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_json_rpc_error_no_data() {
-        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(ErrorPayload {
             code: 3,
             data: None,
-            message: "execution reverted".to_string(),
+            message: "execution reverted".into(),
         })
         .await;
         assert!(res.is_err());
         match res.err().unwrap() {
             AbiDecodeFailedErrors::InvalidJsonRpcResponse(msg) => {
-                assert_eq!(msg, "(code: 3, message: execution reverted, data: None)");
+                assert_eq!(msg, "error code 3: execution reverted");
             }
             _ => panic!("unexpected error"),
         }
@@ -344,19 +345,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_json_rpc_error_no_data_str() {
-        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(ErrorPayload {
             code: 3,
-            data: Some(json!(42)),
-            message: "execution reverted".to_string(),
+            data: Some(RawValue::from_string("42".to_string()).unwrap()),
+            message: "execution reverted".into(),
         })
         .await;
         assert!(res.is_err());
         match res.err().unwrap() {
             AbiDecodeFailedErrors::InvalidJsonRpcResponse(msg) => {
-                assert_eq!(
-                    msg,
-                    "(code: 3, message: execution reverted, data: Some(Number(42)))"
-                );
+                assert_eq!(msg, "42");
             }
             _ => panic!("unexpected error"),
         }
@@ -364,16 +362,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_json_rpc_error_no_revert() {
-        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(ErrorPayload {
             code: 3,
             data: None,
-            message: "some message".to_string(),
+            message: "some message".into(),
         })
         .await;
         assert!(res.is_err());
         match res.err().unwrap() {
             AbiDecodeFailedErrors::InvalidJsonRpcResponse(msg) => {
-                assert_eq!(msg, "(code: 3, message: some message, data: None)");
+                assert_eq!(msg, "error code 3: some message");
             }
             _ => panic!("unexpected error"),
         }
@@ -381,10 +379,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_json_rpc_error_no_data_str_invalid() {
-        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(ErrorPayload {
             code: 3,
-            data: Some(json!("invalid")),
-            message: "execution reverted".to_string(),
+            data: Some(RawValue::from_string(r#""invalid""#.to_string()).unwrap()),
+            message: "execution reverted".into(),
         })
         .await;
 
@@ -435,11 +433,12 @@ mod tests {
         let arg_data = U256::from(0x51);
         let mut data = PANIC_SELECTOR.to_vec();
         data.extend_from_slice(&arg_data.to_be_bytes_vec());
+        let encoded = encode(&data);
 
-        let res = AbiDecodedErrorType::try_from_json_rpc_error(JsonRpcError {
+        let res = AbiDecodedErrorType::try_from_json_rpc_error(ErrorPayload {
             code: 3,
-            data: Some(json!(encode(&data))),
-            message: "execution reverted".to_string(),
+            data: Some(RawValue::from_string(format!(r#""{encoded}""#)).unwrap()),
+            message: "execution reverted".into(),
         })
         .await
         .expect("failed to get error selector");

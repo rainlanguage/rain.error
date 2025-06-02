@@ -7,11 +7,8 @@
   };
 
   outputs = { self, flake-utils, rainix }:
-    flake-utils.lib.eachDefaultSystem (system:
-      {
-        packages = rainix.packages.${system};
-        devShells = rainix.devShells.${system};
-      }
-    );
-
+    flake-utils.lib.eachDefaultSystem (system: {
+      packages = rainix.packages.${system};
+      devShells = rainix.devShells.${system};
+    });
 }

@@ -1,6 +1,10 @@
 name: Rainix CI
 on: [push]
 
+concurrency:
+  group: ${{ github.ref }}-rainix
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   standard-tests:
     strategy:
@@ -22,9 +26,22 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v4
-      - uses: DeterminateSystems/magic-nix-cache-action@v2
+      - uses: nixbuild/nix-quick-install-action@v30
+        with:
+          nix_conf: |
+            keep-env-derivations = true
+            keep-outputs = true
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v6
+        with:
+          # restore and save a cache using this key
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          # if there's no cache hit, restore a cache by this prefix
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          # collect garbage until the Nix store size (in bytes) is at most this number
+          # before trying to save a new cache
+          # 1G = 1073741824
+          gc-max-store-size-linux: 1G
 
       - run: nix develop --command rainix-rs-prelude
       - name: Run ${{ matrix.task }}
