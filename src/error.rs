@@ -19,7 +19,7 @@ pub const SELECTOR_REGISTRY_URL: &str = "https://api.openchain.xyz/signature-dat
 ///
 /// Implement this trait to provide alternative lookup sources
 /// (e.g. local cache, different HTTP service, bundled table).
-#[async_trait]
+#[async_trait(?Send)]
 pub trait ErrorRegistry: Send + Sync {
     /// Lookup candidate ABI errors for a given 4-byte selector.
     async fn lookup(&self, selector: [u8; 4]) -> Result<Vec<AlloyError>, AbiDecodeFailedErrors>;
@@ -34,13 +34,13 @@ pub struct OpenChainRegistry {
 impl Default for OpenChainRegistry {
     fn default() -> Self {
         Self {
-            client: Client::builder().build().expect("reqwest client"),
+            client: Client::new(),
             url: SELECTOR_REGISTRY_URL.to_string(),
         }
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl ErrorRegistry for OpenChainRegistry {
     async fn lookup(&self, selector: [u8; 4]) -> Result<Vec<AlloyError>, AbiDecodeFailedErrors> {
         let selector_hash = alloy::primitives::hex::encode_prefixed(selector);
@@ -288,7 +288,7 @@ mod tests {
 
     struct FakeRegistry;
 
-    #[async_trait]
+    #[async_trait(?Send)]
     impl ErrorRegistry for FakeRegistry {
         async fn lookup(
             &self,
