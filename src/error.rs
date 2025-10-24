@@ -11,8 +11,63 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 use thiserror::Error;
+use url::Url;
 
 pub const SELECTOR_REGISTRY_URL: &str = "https://api.openchain.xyz/signature-database/v1/lookup";
+
+/// Trait for pluggable error selector registries.
+///
+/// Implement this trait to provide alternative lookup sources
+/// (e.g. local cache, different HTTP service, bundled table).
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+pub trait ErrorRegistry: Send + Sync {
+    /// Lookup candidate ABI errors for a given 4-byte selector.
+    async fn lookup(&self, selector: [u8; 4]) -> Result<Vec<AlloyError>, AbiDecodeFailedErrors>;
+}
+
+/// Default OpenChain-backed registry implementation.
+pub struct OpenChainRegistry {
+    client: Client,
+    url: Url,
+}
+
+impl Default for OpenChainRegistry {
+    fn default() -> Self {
+        Self {
+            client: Client::new(),
+            url: Url::parse(SELECTOR_REGISTRY_URL).unwrap(),
+        }
+    }
+}
+
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+impl ErrorRegistry for OpenChainRegistry {
+    async fn lookup(&self, selector: [u8; 4]) -> Result<Vec<AlloyError>, AbiDecodeFailedErrors> {
+        let selector_hash = alloy::primitives::hex::encode_prefixed(selector);
+        let response = self
+            .client
+            .get(self.url.as_ref())
+            .query(&vec![
+                ("function", selector_hash.as_str()),
+                ("filter", "true"),
+            ])
+            .header("accept", "application/json")
+            .send()
+            .await?
+            .json::<Value>()
+            .await?;
+
+        Ok(response["result"]["function"][selector_hash]
+            .as_array()
+            .into_iter()
+            .flat_map(|selectors| selectors.iter())
+            .filter_map(|opt_selector| opt_selector["name"].as_str())
+            .filter_map(|name| name.parse::<AlloyError>().ok())
+            .collect())
+    }
+}
 
 // panic selector
 pub const PANIC_SIG: &str = "Panic(uint256)";
@@ -21,6 +76,10 @@ pub const PANIC_SELECTOR: [u8; 4] = [0x4e, 0x48, 0x7b, 0x71]; // 0x4e487b71
 /// hashmap of cached error selectors
 pub static SELECTORS: Lazy<Mutex<HashMap<[u8; 4], AlloyError>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Default registry instance reused across calls to avoid repeatedly
+/// constructing a reqwest::Client.
+pub static DEFAULT_REGISTRY: Lazy<OpenChainRegistry> = Lazy::new(OpenChainRegistry::default);
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Error)]
 pub enum AbiDecodedErrorType {
@@ -63,9 +122,11 @@ impl AbiDecodedErrorType {
         Ok(selectors.get(&selector_hash).cloned())
     }
 
-    /// decodes an error returned from calling a contract by searching its selector in registry
+    /// Decode an error selector with optional registry injection.
+    /// If `registry` is `None`, uses the default OpenChain-backed registry.
     pub async fn selector_registry_abi_decode(
         error_data: &[u8],
+        registry: Option<&dyn ErrorRegistry>,
     ) -> Result<Self, AbiDecodeFailedErrors> {
         if error_data.is_empty() {
             return Err(AbiDecodeFailedErrors::NoData);
@@ -76,7 +137,6 @@ impl AbiDecodedErrorType {
             ));
         }
         let (hash_bytes, args_data) = error_data.split_at(4);
-        let selector_hash = alloy::primitives::hex::encode_prefixed(hash_bytes);
         let selector_hash_bytes: [u8; 4] = hash_bytes
             .try_into()
             .map_err(|_| AbiDecodeFailedErrors::InvalidSelectorHash(hash_bytes.to_vec()))?;
@@ -100,43 +160,34 @@ impl AbiDecodedErrorType {
             return Ok(Self::Unknown(error_data.to_vec()));
         }
 
-        let client = Client::builder().build()?;
-        let response = client
-            .get(SELECTOR_REGISTRY_URL)
-            .query(&vec![
-                ("function", selector_hash.as_str()),
-                ("filter", "true"),
-            ])
-            .header("accept", "application/json")
-            .send()
-            .await?
-            .json::<Value>()
-            .await?;
+        let registry = match registry {
+            Some(r) => r,
+            None => &*DEFAULT_REGISTRY as &dyn ErrorRegistry,
+        };
 
-        if let Some(selectors) = response["result"]["function"][selector_hash].as_array() {
-            for opt_selector in selectors {
-                if let Some(selector) = opt_selector["name"].as_str() {
-                    if let Ok(error) = selector.parse::<AlloyError>() {
-                        if let Ok(result) = error.abi_decode_input(args_data) {
-                            // cache the fetched selector
-                            {
-                                let mut cached_selectors = SELECTORS.lock()?;
-                                cached_selectors.insert(selector_hash_bytes, error.clone());
-                            };
-                            return Ok(Self::Known {
-                                sig: error.signature(),
-                                name: error.name,
-                                args: result.iter().map(|v| format!("{:?}", v)).collect(),
-                                data: error_data.to_vec(),
-                            });
-                        }
-                    }
-                }
-            }
-            Ok(Self::Unknown(error_data.to_vec()))
-        } else {
-            Ok(Self::Unknown(error_data.to_vec()))
-        }
+        // consult the registry
+        let candidates = registry.lookup(selector_hash_bytes).await?;
+        Ok(candidates
+            .into_iter()
+            .find_map(|error| {
+                let result = error.abi_decode_input(args_data).ok()?;
+
+                // cache the fetched selector
+                let mut cached_selectors = match SELECTORS.lock() {
+                    Ok(lock) => lock,
+                    Err(e) => return Some(Err(e)),
+                };
+                cached_selectors.insert(selector_hash_bytes, error.clone());
+
+                Some(Ok(Self::Known {
+                    sig: error.signature(),
+                    name: error.name,
+                    args: result.iter().map(|v| format!("{:?}", v)).collect(),
+                    data: error_data.to_vec(),
+                }))
+            })
+            .transpose()?
+            .unwrap_or_else(|| Self::Unknown(error_data.to_vec())))
     }
 
     /// Decodes an error by checking if it is a Panic(uint256) and returns `None` if
@@ -184,7 +235,26 @@ impl AbiDecodedErrorType {
                     AbiDecodeFailedErrors::InvalidJsonRpcResponse(val.get().to_string())
                 })?;
                 let decoded_data = decode(unwrapped.as_bytes())?;
-                return Self::selector_registry_abi_decode(&decoded_data).await;
+                return Self::selector_registry_abi_decode(&decoded_data, None).await;
+            }
+        }
+        Err(AbiDecodeFailedErrors::InvalidJsonRpcResponse(
+            err.to_string(),
+        ))
+    }
+
+    /// Variant of JSON-RPC error decoding that accepts an injected registry.
+    pub async fn try_from_json_rpc_error_with_registry(
+        err: ErrorPayload,
+        registry: &dyn ErrorRegistry,
+    ) -> Result<Self, AbiDecodeFailedErrors> {
+        if err.message.contains("revert") {
+            if let Some(val) = &err.data {
+                let unwrapped: String = serde_json::from_str(val.get()).map_err(|_| {
+                    AbiDecodeFailedErrors::InvalidJsonRpcResponse(val.get().to_string())
+                })?;
+                let decoded_data = decode(unwrapped.as_bytes())?;
+                return Self::selector_registry_abi_decode(&decoded_data, Some(registry)).await;
             }
         }
         Err(AbiDecodeFailedErrors::InvalidJsonRpcResponse(
@@ -220,10 +290,29 @@ mod tests {
     use super::*;
     use serde_json::value::RawValue;
 
+    struct FakeRegistry;
+
+    #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+    impl ErrorRegistry for FakeRegistry {
+        async fn lookup(
+            &self,
+            selector: [u8; 4],
+        ) -> Result<Vec<AlloyError>, AbiDecodeFailedErrors> {
+            // 0x1ac66908
+            if selector == [0x1a, 0xc6, 0x69, 0x08] {
+                let e: AlloyError = "UnexpectedOperandValue()".parse().unwrap();
+                Ok(vec![e])
+            } else {
+                Ok(vec![])
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_error_decoder() {
         let data = vec![26, 198, 105, 8];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data, Some(&FakeRegistry))
             .await
             .expect("failed to get error selector");
         assert_eq!(
@@ -240,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_unknown() {
         let data = vec![26, 198, 105, 9];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data, Some(&FakeRegistry))
             .await
             .expect("failed to get error selector");
         assert_eq!(AbiDecodedErrorType::Unknown(data), res);
@@ -249,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_invalid_selector() {
         let data = vec![26, 198, 105];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data, Some(&FakeRegistry))
             .await
             .expect_err("expected error");
         match res {
@@ -261,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_no_data() {
         let data = vec![];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data, Some(&FakeRegistry))
             .await
             .expect_err("expected error");
         match res {
@@ -272,8 +361,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_cache() {
+        // ensure cache is empty for this test
+        clear_cache();
         let data = vec![26, 198, 105, 8];
-        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data.clone())
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data, Some(&FakeRegistry))
             .await
             .expect("failed to get error selector");
         assert_eq!(
@@ -304,15 +395,25 @@ mod tests {
         assert_eq!(None, res);
     }
 
+    fn clear_cache() {
+        let mut cache = SELECTORS
+            .lock()
+            .expect("failed to lock selectors cache for clearing");
+        cache.clear();
+    }
+
     #[tokio::test]
     async fn test_error_decoder_json_rpc_error() {
         let data = vec![26, 198, 105, 8];
         let encoded = encode(&data);
-        let res = AbiDecodedErrorType::try_from_json_rpc_error(ErrorPayload {
-            code: 3,
-            data: Some(RawValue::from_string(format!(r#""{encoded}""#)).unwrap()),
-            message: "execution reverted".into(),
-        })
+        let res = AbiDecodedErrorType::try_from_json_rpc_error_with_registry(
+            ErrorPayload {
+                code: 3,
+                data: Some(RawValue::from_string(format!(r#""{encoded}""#)).unwrap()),
+                message: "execution reverted".into(),
+            },
+            &FakeRegistry,
+        )
         .await
         .expect("failed to get error selector");
         assert_eq!(
@@ -451,5 +552,32 @@ mod tests {
             },
             res
         );
+    }
+
+    #[tokio::test]
+    async fn test_openchain_registry_live_lookup_known_selector() {
+        clear_cache();
+
+        let data = vec![0x1a, 0xc6, 0x69, 0x08];
+
+        let registry = OpenChainRegistry::default();
+        let res = AbiDecodedErrorType::selector_registry_abi_decode(&data, Some(&registry))
+            .await
+            .expect("OpenChain lookup failed");
+
+        match res {
+            AbiDecodedErrorType::Known {
+                name,
+                args,
+                sig,
+                data: decoded,
+            } => {
+                assert_eq!(decoded, data);
+                assert!(args.is_empty(), "expected zero-arg error match");
+                assert!(!name.is_empty(), "expected non-empty error name");
+                assert!(sig.ends_with(')'), "expected error-like signature");
+            }
+            AbiDecodedErrorType::Unknown(_) => panic!("expected a known error from OpenChain"),
+        }
     }
 }
