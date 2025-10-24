@@ -3,7 +3,6 @@ use alloy::json_abi::Error as AlloyError;
 use alloy::primitives::hex::{decode, encode, encode_prefixed, FromHexError};
 use alloy::primitives::U256;
 use alloy::rpc::json_rpc::ErrorPayload;
-use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use reqwest::{Client, Error as ReqwestError};
 use serde_json::Value;
@@ -19,7 +18,8 @@ pub const SELECTOR_REGISTRY_URL: &str = "https://api.openchain.xyz/signature-dat
 ///
 /// Implement this trait to provide alternative lookup sources
 /// (e.g. local cache, different HTTP service, bundled table).
-#[async_trait(?Send)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 pub trait ErrorRegistry: Send + Sync {
     /// Lookup candidate ABI errors for a given 4-byte selector.
     async fn lookup(&self, selector: [u8; 4]) -> Result<Vec<AlloyError>, AbiDecodeFailedErrors>;
@@ -40,7 +40,8 @@ impl Default for OpenChainRegistry {
     }
 }
 
-#[async_trait(?Send)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 impl ErrorRegistry for OpenChainRegistry {
     async fn lookup(&self, selector: [u8; 4]) -> Result<Vec<AlloyError>, AbiDecodeFailedErrors> {
         let selector_hash = alloy::primitives::hex::encode_prefixed(selector);
@@ -78,6 +79,10 @@ pub const PANIC_SELECTOR: [u8; 4] = [0x4e, 0x48, 0x7b, 0x71]; // 0x4e487b71
 /// hashmap of cached error selectors
 pub static SELECTORS: Lazy<Mutex<HashMap<[u8; 4], AlloyError>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Default registry instance reused across calls to avoid repeatedly
+/// constructing a reqwest::Client.
+pub static DEFAULT_REGISTRY: Lazy<OpenChainRegistry> = Lazy::new(OpenChainRegistry::default);
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Error)]
 pub enum AbiDecodedErrorType {
@@ -181,8 +186,7 @@ impl AbiDecodedErrorType {
     pub async fn selector_registry_abi_decode(
         error_data: &[u8],
     ) -> Result<Self, AbiDecodeFailedErrors> {
-        let registry = OpenChainRegistry::default();
-        Self::decode_with_registry(error_data, &registry).await
+        Self::decode_with_registry(error_data, &*DEFAULT_REGISTRY).await
     }
 
     /// Decodes an error by checking if it is a Panic(uint256) and returns `None` if
@@ -283,12 +287,12 @@ impl<'a> From<PoisonError<MutexGuard<'a, HashMap<[u8; 4], AlloyError>>>> for Abi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use serde_json::value::RawValue;
 
     struct FakeRegistry;
 
-    #[async_trait(?Send)]
+    #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
     impl ErrorRegistry for FakeRegistry {
         async fn lookup(
             &self,
@@ -307,7 +311,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder() {
         let data = vec![26, 198, 105, 8];
-        let res = AbiDecodedErrorType::decode_with_registry(&data.clone(), &FakeRegistry)
+        let res = AbiDecodedErrorType::decode_with_registry(&data, &FakeRegistry)
             .await
             .expect("failed to get error selector");
         assert_eq!(
@@ -324,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_unknown() {
         let data = vec![26, 198, 105, 9];
-        let res = AbiDecodedErrorType::decode_with_registry(&data.clone(), &FakeRegistry)
+        let res = AbiDecodedErrorType::decode_with_registry(&data, &FakeRegistry)
             .await
             .expect("failed to get error selector");
         assert_eq!(AbiDecodedErrorType::Unknown(data), res);
@@ -333,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_invalid_selector() {
         let data = vec![26, 198, 105];
-        let res = AbiDecodedErrorType::decode_with_registry(&data.clone(), &FakeRegistry)
+        let res = AbiDecodedErrorType::decode_with_registry(&data, &FakeRegistry)
             .await
             .expect_err("expected error");
         match res {
@@ -345,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_decoder_no_data() {
         let data = vec![];
-        let res = AbiDecodedErrorType::decode_with_registry(&data.clone(), &FakeRegistry)
+        let res = AbiDecodedErrorType::decode_with_registry(&data, &FakeRegistry)
             .await
             .expect_err("expected error");
         match res {
@@ -356,8 +360,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_decoder_cache() {
+        // ensure cache is empty for this test
+        clear_cache();
         let data = vec![26, 198, 105, 8];
-        let res = AbiDecodedErrorType::decode_with_registry(&data.clone(), &FakeRegistry)
+        let res = AbiDecodedErrorType::decode_with_registry(&data, &FakeRegistry)
             .await
             .expect("failed to get error selector");
         assert_eq!(
@@ -386,6 +392,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(None, res);
+    }
+
+    fn clear_cache() {
+        let mut cache = SELECTORS
+            .lock()
+            .expect("failed to lock selectors cache for clearing");
+        cache.clear();
     }
 
     #[tokio::test]
