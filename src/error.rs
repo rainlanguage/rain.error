@@ -11,6 +11,7 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 use thiserror::Error;
+use url::Url;
 
 pub const SELECTOR_REGISTRY_URL: &str = "https://api.openchain.xyz/signature-database/v1/lookup";
 
@@ -28,14 +29,14 @@ pub trait ErrorRegistry: Send + Sync {
 /// Default OpenChain-backed registry implementation.
 pub struct OpenChainRegistry {
     client: Client,
-    url: String,
+    url: Url,
 }
 
 impl Default for OpenChainRegistry {
     fn default() -> Self {
         Self {
             client: Client::new(),
-            url: SELECTOR_REGISTRY_URL.to_string(),
+            url: Url::parse(SELECTOR_REGISTRY_URL).unwrap(),
         }
     }
 }
@@ -47,7 +48,7 @@ impl ErrorRegistry for OpenChainRegistry {
         let selector_hash = alloy::primitives::hex::encode_prefixed(selector);
         let response = self
             .client
-            .get(&self.url)
+            .get(self.url.as_ref())
             .query(&vec![
                 ("function", selector_hash.as_str()),
                 ("filter", "true"),
@@ -58,17 +59,13 @@ impl ErrorRegistry for OpenChainRegistry {
             .json::<Value>()
             .await?;
 
-        let mut out: Vec<AlloyError> = Vec::new();
-        if let Some(selectors) = response["result"]["function"][selector_hash].as_array() {
-            for opt_selector in selectors {
-                if let Some(name) = opt_selector["name"].as_str() {
-                    if let Ok(err) = name.parse::<AlloyError>() {
-                        out.push(err);
-                    }
-                }
-            }
-        }
-        Ok(out)
+        Ok(response["result"]["function"][selector_hash]
+            .as_array()
+            .into_iter()
+            .flat_map(|selectors| selectors.iter())
+            .filter_map(|opt_selector| opt_selector["name"].as_str())
+            .filter_map(|name| name.parse::<AlloyError>().ok())
+            .collect())
     }
 }
 
@@ -170,23 +167,27 @@ impl AbiDecodedErrorType {
 
         // consult the registry
         let candidates = registry.lookup(selector_hash_bytes).await?;
-        for error in candidates {
-            if let Ok(result) = error.abi_decode_input(args_data) {
+        Ok(candidates
+            .into_iter()
+            .find_map(|error| {
+                let result = error.abi_decode_input(args_data).ok()?;
+
                 // cache the fetched selector
-                {
-                    let mut cached_selectors = SELECTORS.lock()?;
-                    cached_selectors.insert(selector_hash_bytes, error.clone());
-                }
-                return Ok(Self::Known {
+                let mut cached_selectors = match SELECTORS.lock() {
+                    Ok(lock) => lock,
+                    Err(e) => return Some(Err(e)),
+                };
+                cached_selectors.insert(selector_hash_bytes, error.clone());
+
+                Some(Ok(Self::Known {
                     sig: error.signature(),
                     name: error.name,
                     args: result.iter().map(|v| format!("{:?}", v)).collect(),
                     data: error_data.to_vec(),
-                });
-            }
-        }
-
-        Ok(Self::Unknown(error_data.to_vec()))
+                }))
+            })
+            .transpose()?
+            .unwrap_or_else(|| Self::Unknown(error_data.to_vec())))
     }
 
     /// Decodes an error by checking if it is a Panic(uint256) and returns `None` if
