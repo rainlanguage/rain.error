@@ -552,4 +552,31 @@ mod tests {
             res
         );
     }
+
+    #[tokio::test]
+    async fn test_openchain_registry_live_lookup_known_selector() {
+        clear_cache();
+
+        let data = vec![0x1a, 0xc6, 0x69, 0x08];
+
+        let registry = OpenChainRegistry::default();
+        let res = AbiDecodedErrorType::decode_with_registry(&data, &registry)
+            .await
+            .expect("OpenChain lookup failed");
+
+        match res {
+            AbiDecodedErrorType::Known {
+                name,
+                args,
+                sig,
+                data: decoded,
+            } => {
+                assert_eq!(decoded, data);
+                assert!(args.is_empty(), "expected zero-arg error match");
+                assert!(!name.is_empty(), "expected non-empty error name");
+                assert!(sig.ends_with(')'), "expected error-like signature");
+            }
+            AbiDecodedErrorType::Unknown(_) => panic!("expected a known error from OpenChain"),
+        }
+    }
 }
