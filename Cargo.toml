@@ -1,6 +1,6 @@
 [package]
 name = "rain-error-decoding"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Crate for rain error decoding"
 license = "CAL-1.0"
